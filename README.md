@@ -1,36 +1,159 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# MAMAL - Manajemen Kelas Kuliah
+
+Aplikasi web manajemen kelas kuliah yang dirancang untuk institusi pendidikan Islam. Aplikasi ini mengelola tiga jenis pengguna (Admin/Kurikulum, Dosen, Mahasiswa) dengan sistem privilege yang fleksibel dan hierarkis.
+
+## Tech Stack
+
+- **Framework**: Next.js 14+ dengan App Router
+- **Database**: PostgreSQL via Supabase
+- **ORM**: Drizzle ORM
+- **UI**: Tailwind CSS + shadcn/ui
+- **Authentication**: Custom JWT-based auth
+
+## Features
+
+### User Types
+
+1. **Admin (Kurikulum)**
+   - Mengelola tahun akademik dan semester
+   - Mengelola kelas dan enrollment
+   - Mengelola pengguna
+   - Mengatur privilege dosen
+   - Menunjuk Ketua Umum
+
+2. **Dosen**
+   - Dosen Pendamping
+   - Wali Kelas
+   - Pengurus Hafalan - mengelola hafalan mahasiswa
+   - Pengurus Capaian Materi - tracking progress materi
+   - Pengurus Kelas - evaluasi kelas
+
+3. **Mahasiswa**
+   - Ketua Umum - mengelola privilege mahasiswa di kelasnya
+   - Ketua Kelompok
+   - Kamtib (Keamanan & Ketertiban)
+   - Ketua Fan Ilmu (per bidang: Fiqh, Hadits, Tafsir, dll)
+   - Sekretaris
+   - Bendahara
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+- Node.js 18+
+- PostgreSQL database (or Supabase account)
+
+### Installation
+
+1. Clone repository:
+   ```bash
+   git clone https://github.com/fatkquladhim/mamal.git
+   cd mamal
+   ```
+
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+
+3. Setup environment variables:
+   ```bash
+   cp .env.example .env
+   ```
+
+4. Update `.env` with your database credentials:
+   ```
+   DATABASE_URL=postgresql://user:password@localhost:5432/mamal
+   JWT_SECRET=your-super-secret-jwt-key
+   ```
+
+5. Run database migrations:
+   ```bash
+   npm run db:push
+   ```
+
+6. Start development server:
+   ```bash
+   npm run dev
+   ```
+
+### Scripts
 
 ```bash
+# Development
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+
+# Build
+npm run build
+
+# Start production
+npm start
+
+# Database operations
+npm run db:generate  # Generate migrations
+npm run db:push      # Push schema to database
+npm run db:studio    # Open Drizzle Studio
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Project Structure
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```
+src/
+├── app/
+│   ├── (auth)/           # Auth pages (login, register)
+│   ├── (dashboard)/      # Dashboard pages
+│   │   ├── admin/        # Admin pages
+│   │   ├── dosen/        # Dosen pages
+│   │   └── mahasiswa/    # Mahasiswa pages
+│   └── api/              # API routes
+├── actions/              # Server actions
+│   ├── admin/            # Admin actions
+│   ├── dosen/            # Dosen actions
+│   └── ketua-umum/       # Ketua umum actions
+├── components/           # React components
+│   ├── layout/           # Layout components
+│   └── ui/               # UI components (shadcn)
+└── lib/
+    ├── auth/             # Auth utilities
+    └── db/               # Database schema & connection
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Database Schema
 
-## Learn More
+Main entities:
+- **users** - All system users
+- **academic_years** - Academic year management
+- **semesters** - Semester within academic years
+- **classes** - Class management
+- **class_enrollments** - Student enrollments
+- **groups** - Small groups within classes
+- **fan_ilmu** - Study areas (Fiqh, Hadits, etc.)
+- **dosen_privileges** - Dosen role assignments
+- **mahasiswa_privileges** - Student role assignments
+- **hafalan_records** - Memorization tracking
+- **material_achievements** - Material progress tracking
+- **attendance_records** - Attendance tracking
+- **evaluations** - Class evaluations
 
-To learn more about Next.js, take a look at the following resources:
+## Privilege Hierarchy
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```
+Admin (Kurikulum)
+├── Assigns Dosen Privileges
+│   ├── Dosen Pendamping
+│   ├── Wali Kelas
+│   ├── Pengurus Hafalan
+│   ├── Pengurus Capaian Materi
+│   └── Pengurus Kelas
+└── Assigns Ketua Umum
+    └── Ketua Umum can assign:
+        ├── Ketua Kelompok
+        ├── Kamtib
+        ├── Ketua Fan Ilmu
+        ├── Sekretaris
+        └── Bendahara
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## License
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+MIT
