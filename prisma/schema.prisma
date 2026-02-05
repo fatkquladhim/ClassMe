@@ -1,0 +1,400 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+enum UserType {
+  ADMIN
+  DOSEN
+  MAHASISWA
+
+  @@map("user_type")
+}
+
+enum SemesterType {
+  GANJIL
+  GENAP
+
+  @@map("semester_type")
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  INACTIVE
+  GRADUATED
+  DROPPED
+
+  @@map("enrollment_status")
+}
+
+enum DosenPrivilegeType {
+  DOSEN_PENDAMPING
+  WALI_KELAS
+  PENGURUS_HAFALAN
+  PENGURUS_CAPAIAN_MATERI
+  PENGURUS_KELAS
+
+  @@map("dosen_privilege_type")
+}
+
+enum MahasiswaPrivilegeType {
+  KETUA_UMUM
+  KETUA_KELOMPOK
+  KAMTIB
+  KETUA_FAN_ILMU
+  SEKRETARIS
+  BENDAHARA
+
+  @@map("mahasiswa_privilege_type")
+}
+
+enum HafalanStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  NEED_REVISION
+
+  @@map("hafalan_status")
+}
+
+enum AchievementStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+
+  @@map("achievement_status")
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  EXCUSED
+
+  @@map("attendance_status")
+}
+
+enum EvaluationType {
+  WEEKLY
+  MONTHLY
+  SEMESTER
+  SPECIAL
+
+  @@map("evaluation_type")
+}
+
+enum MaterialType {
+  CORE
+  SUPPLEMENTARY
+  ASSESSMENT
+
+  @@map("material_type")
+}
+
+// ============================================
+// MODELS
+// ============================================
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  name         String
+  passwordHash String   @map("password_hash")
+  phone        String?
+  photoUrl     String?  @map("photo_url")
+  userType     UserType @default(MAHASISWA) @map("user_type")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  enrollments                  ClassEnrollment[]
+  dosenPrivileges              DosenPrivilege[]
+  assignedDosenPrivileges      DosenPrivilege[]      @relation("DosenPrivilegeAssigner")
+  assignedMahasiswaPrivileges  MahasiswaPrivilege[]  @relation("MahasiswaPrivilegeAssigner")
+  evaluationsGiven             Evaluation[]          @relation("Evaluator")
+  hafalanEvaluated             HafalanRecord[]       @relation("HafalanEvaluator")
+  attendanceRecorded           AttendanceRecord[]    @relation("AttendanceRecorder")
+  materialAchievementsEvaluated MaterialAchievement[] @relation("MaterialEvaluator")
+  announcements                Announcement[]
+
+  @@map("users")
+}
+
+model AcademicYear {
+  id        String   @id @default(uuid())
+  name      String
+  startDate DateTime @map("start_date") @db.Date
+  endDate   DateTime @map("end_date") @db.Date
+  isActive  Boolean  @default(false) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  semesters Semester[]
+
+  @@map("academic_years")
+}
+
+model Semester {
+  id             String       @id @default(uuid())
+  academicYearId String       @map("academic_year_id")
+  type           SemesterType
+  startDate      DateTime     @map("start_date") @db.Date
+  endDate        DateTime     @map("end_date") @db.Date
+  isActive       Boolean      @default(false) @map("is_active")
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  // Relations
+  academicYear AcademicYear      @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  classes      Class[]
+  enrollments  ClassEnrollment[]
+
+  @@map("semesters")
+}
+
+model Class {
+  id          String   @id @default(uuid())
+  name        String
+  code        String
+  semesterId  String   @map("semester_id")
+  description String?
+  maxStudents Int      @default(30) @map("max_students")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  semester             Semester             @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+  enrollments          ClassEnrollment[]
+  groups               Group[]
+  fanIlmu              FanIlmu[]
+  dosenPrivileges      DosenPrivilege[]
+  mahasiswaPrivileges  MahasiswaPrivilege[]
+  materials            Material[]
+  evaluations          Evaluation[]
+  announcements        Announcement[]
+
+  @@map("classes")
+}
+
+model ClassEnrollment {
+  id         String           @id @default(uuid())
+  userId     String           @map("user_id")
+  classId    String           @map("class_id")
+  semesterId String           @map("semester_id")
+  status     EnrollmentStatus @default(ACTIVE)
+  enrolledAt DateTime         @default(now()) @map("enrolled_at")
+
+  // Relations
+  user                 User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  class                Class                 @relation(fields: [classId], references: [id], onDelete: Cascade)
+  semester             Semester              @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+  groupMemberships     GroupMember[]
+  privileges           MahasiswaPrivilege[]
+  materialAchievements MaterialAchievement[]
+  hafalanRecords       HafalanRecord[]
+  attendanceRecords    AttendanceRecord[]
+  evaluations          Evaluation[]
+
+  @@unique([userId, classId, semesterId], name: "unique_enrollment")
+  @@map("class_enrollments")
+}
+
+model Group {
+  id          String   @id @default(uuid())
+  classId     String   @map("class_id")
+  name        String
+  groupNumber Int      @map("group_number")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  // Relations
+  class      Class                @relation(fields: [classId], references: [id], onDelete: Cascade)
+  members    GroupMember[]
+  privileges MahasiswaPrivilege[]
+
+  @@map("groups")
+}
+
+model GroupMember {
+  id           String   @id @default(uuid())
+  groupId      String   @map("group_id")
+  enrollmentId String   @map("enrollment_id")
+  isLeader     Boolean  @default(false) @map("is_leader")
+  joinedAt     DateTime @default(now()) @map("joined_at")
+
+  // Relations
+  group      Group           @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  enrollment ClassEnrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, enrollmentId], name: "unique_group_member")
+  @@map("group_members")
+}
+
+model FanIlmu {
+  id          String   @id @default(uuid())
+  classId     String   @map("class_id")
+  name        String
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  // Relations
+  class          Class                @relation(fields: [classId], references: [id], onDelete: Cascade)
+  privileges     MahasiswaPrivilege[]
+  hafalanRecords HafalanRecord[]
+
+  @@map("fan_ilmu")
+}
+
+model DosenPrivilege {
+  id            String             @id @default(uuid())
+  userId        String             @map("user_id")
+  classId       String             @map("class_id")
+  privilegeType DosenPrivilegeType @map("privilege_type")
+  assignedAt    DateTime           @default(now()) @map("assigned_at")
+  assignedBy    String?            @map("assigned_by")
+
+  // Relations
+  user     User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  class    Class @relation(fields: [classId], references: [id], onDelete: Cascade)
+  assigner User? @relation("DosenPrivilegeAssigner", fields: [assignedBy], references: [id])
+
+  @@unique([userId, classId, privilegeType], name: "unique_dosen_privilege")
+  @@map("dosen_privileges")
+}
+
+model MahasiswaPrivilege {
+  id            String                 @id @default(uuid())
+  enrollmentId  String                 @map("enrollment_id")
+  classId       String                 @map("class_id")
+  privilegeType MahasiswaPrivilegeType @map("privilege_type")
+  groupId       String?                @map("group_id")
+  fanIlmuId     String?                @map("fan_ilmu_id")
+  assignedAt    DateTime               @default(now()) @map("assigned_at")
+  assignedBy    String?                @map("assigned_by")
+
+  // Relations
+  enrollment ClassEnrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  class      Class           @relation(fields: [classId], references: [id], onDelete: Cascade)
+  group      Group?          @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  fanIlmu    FanIlmu?        @relation(fields: [fanIlmuId], references: [id], onDelete: SetNull)
+  assigner   User?           @relation("MahasiswaPrivilegeAssigner", fields: [assignedBy], references: [id])
+
+  @@unique([enrollmentId, classId, privilegeType], name: "unique_mahasiswa_privilege")
+  @@map("mahasiswa_privileges")
+}
+
+model Material {
+  id            String       @id @default(uuid())
+  classId       String       @map("class_id")
+  title         String
+  description   String?
+  sequenceOrder Int          @default(0) @map("sequence_order")
+  materialType  MaterialType @default(CORE) @map("material_type")
+  createdAt     DateTime     @default(now()) @map("created_at")
+
+  // Relations
+  class        Class                 @relation(fields: [classId], references: [id], onDelete: Cascade)
+  achievements MaterialAchievement[]
+
+  @@map("materials")
+}
+
+model MaterialAchievement {
+  id           String            @id @default(uuid())
+  enrollmentId String            @map("enrollment_id")
+  materialId   String            @map("material_id")
+  status       AchievementStatus @default(NOT_STARTED)
+  score        Decimal?          @db.Decimal(5, 2)
+  notes        String?
+  achievedAt   DateTime?         @map("achieved_at")
+  evaluatedBy  String?           @map("evaluated_by")
+
+  // Relations
+  enrollment ClassEnrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  material   Material        @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  evaluator  User?           @relation("MaterialEvaluator", fields: [evaluatedBy], references: [id])
+
+  @@unique([enrollmentId, materialId], name: "unique_material_achievement")
+  @@map("material_achievements")
+}
+
+model HafalanRecord {
+  id             String        @id @default(uuid())
+  enrollmentId   String        @map("enrollment_id")
+  fanIlmuId      String?       @map("fan_ilmu_id")
+  surahOrContent String        @map("surah_or_content")
+  ayatStart      Int?          @map("ayat_start")
+  ayatEnd        Int?          @map("ayat_end")
+  status         HafalanStatus @default(PENDING)
+  score          Decimal?      @db.Decimal(5, 2)
+  notes          String?
+  evaluatedBy    String?       @map("evaluated_by")
+  evaluatedAt    DateTime?     @map("evaluated_at")
+  createdAt      DateTime      @default(now()) @map("created_at")
+
+  // Relations
+  enrollment ClassEnrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  fanIlmu    FanIlmu?        @relation(fields: [fanIlmuId], references: [id], onDelete: SetNull)
+  evaluator  User?           @relation("HafalanEvaluator", fields: [evaluatedBy], references: [id])
+
+  @@map("hafalan_records")
+}
+
+model AttendanceRecord {
+  id             String           @id @default(uuid())
+  enrollmentId   String           @map("enrollment_id")
+  attendanceDate DateTime         @map("attendance_date") @db.Date
+  status         AttendanceStatus @default(PRESENT)
+  notes          String?
+  recordedBy     String?          @map("recorded_by")
+  createdAt      DateTime         @default(now()) @map("created_at")
+
+  // Relations
+  enrollment ClassEnrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  recorder   User?           @relation("AttendanceRecorder", fields: [recordedBy], references: [id])
+
+  @@unique([enrollmentId, attendanceDate], name: "unique_attendance")
+  @@map("attendance_records")
+}
+
+model Evaluation {
+  id             String         @id @default(uuid())
+  enrollmentId   String         @map("enrollment_id")
+  classId        String         @map("class_id")
+  evaluationType EvaluationType @map("evaluation_type")
+  score          Decimal?       @db.Decimal(5, 2)
+  feedback       String?
+  evaluatedBy    String         @map("evaluated_by")
+  evaluatedAt    DateTime       @default(now()) @map("evaluated_at")
+
+  // Relations
+  enrollment ClassEnrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  class      Class           @relation(fields: [classId], references: [id], onDelete: Cascade)
+  evaluator  User            @relation("Evaluator", fields: [evaluatedBy], references: [id])
+
+  @@map("evaluations")
+}
+
+model Announcement {
+  id        String   @id @default(uuid())
+  classId   String   @map("class_id")
+  title     String
+  content   String
+  createdBy String   @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  class  Class @relation(fields: [classId], references: [id], onDelete: Cascade)
+  author User  @relation(fields: [createdBy], references: [id])
+
+  @@map("announcements")
+}

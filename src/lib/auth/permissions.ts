@@ -1,11 +1,6 @@
-import { db } from "@/lib/db";
-import {
-  dosenPrivileges,
-  mahasiswaPrivileges,
-  classEnrollments,
-} from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
+import prisma from "@/lib/prisma";
 
+// Prisma enum types mapped to lowercase for API compatibility
 export type DosenPrivilegeType =
   | "dosen_pendamping"
   | "wali_kelas"
@@ -21,23 +16,52 @@ export type MahasiswaPrivilegeType =
   | "sekretaris"
   | "bendahara";
 
+// Prisma enum values (uppercase)
+type PrismaDosenPrivilegeType =
+  | "DOSEN_PENDAMPING"
+  | "WALI_KELAS"
+  | "PENGURUS_HAFALAN"
+  | "PENGURUS_CAPAIAN_MATERI"
+  | "PENGURUS_KELAS";
+
+type PrismaMahasiswaPrivilegeType =
+  | "KETUA_UMUM"
+  | "KETUA_KELOMPOK"
+  | "KAMTIB"
+  | "KETUA_FAN_ILMU"
+  | "SEKRETARIS"
+  | "BENDAHARA";
+
+// Helper functions for enum conversion
+function toDosenPrismaEnum(type: DosenPrivilegeType): PrismaDosenPrivilegeType {
+  return type.toUpperCase() as PrismaDosenPrivilegeType;
+}
+
+function fromDosenPrismaEnum(type: PrismaDosenPrivilegeType): DosenPrivilegeType {
+  return type.toLowerCase() as DosenPrivilegeType;
+}
+
+function fromMahasiswaPrismaEnum(type: PrismaMahasiswaPrivilegeType): MahasiswaPrivilegeType {
+  return type.toLowerCase() as MahasiswaPrivilegeType;
+}
+
+function toMahasiswaPrismaEnum(type: MahasiswaPrivilegeType): PrismaMahasiswaPrivilegeType {
+  return type.toUpperCase() as PrismaMahasiswaPrivilegeType;
+}
+
 // Check if a dosen has a specific privilege for a class
 export async function hasDosenPrivilege(
   userId: string,
   classId: string,
   privilegeType: DosenPrivilegeType
 ): Promise<boolean> {
-  const [privilege] = await db
-    .select()
-    .from(dosenPrivileges)
-    .where(
-      and(
-        eq(dosenPrivileges.userId, userId),
-        eq(dosenPrivileges.classId, classId),
-        eq(dosenPrivileges.privilegeType, privilegeType)
-      )
-    )
-    .limit(1);
+  const privilege = await prisma.dosenPrivilege.findFirst({
+    where: {
+      userId,
+      classId,
+      privilegeType: toDosenPrismaEnum(privilegeType),
+    },
+  });
 
   return !!privilege;
 }
@@ -47,16 +71,12 @@ export async function hasAnyDosenPrivilege(
   userId: string,
   classId: string
 ): Promise<boolean> {
-  const [privilege] = await db
-    .select()
-    .from(dosenPrivileges)
-    .where(
-      and(
-        eq(dosenPrivileges.userId, userId),
-        eq(dosenPrivileges.classId, classId)
-      )
-    )
-    .limit(1);
+  const privilege = await prisma.dosenPrivilege.findFirst({
+    where: {
+      userId,
+      classId,
+    },
+  });
 
   return !!privilege;
 }
@@ -66,17 +86,17 @@ export async function getDosenPrivilegesForClass(
   userId: string,
   classId: string
 ): Promise<DosenPrivilegeType[]> {
-  const privileges = await db
-    .select({ privilegeType: dosenPrivileges.privilegeType })
-    .from(dosenPrivileges)
-    .where(
-      and(
-        eq(dosenPrivileges.userId, userId),
-        eq(dosenPrivileges.classId, classId)
-      )
-    );
+  const privileges = await prisma.dosenPrivilege.findMany({
+    where: {
+      userId,
+      classId,
+    },
+    select: {
+      privilegeType: true,
+    },
+  });
 
-  return privileges.map((p) => p.privilegeType);
+  return privileges.map((p: { privilegeType: PrismaDosenPrivilegeType }) => fromDosenPrismaEnum(p.privilegeType));
 }
 
 // Check if a mahasiswa has a specific privilege for a class
@@ -86,33 +106,25 @@ export async function hasMahasiswaPrivilege(
   privilegeType: MahasiswaPrivilegeType
 ): Promise<boolean> {
   // First get the enrollment
-  const [enrollment] = await db
-    .select()
-    .from(classEnrollments)
-    .where(
-      and(
-        eq(classEnrollments.userId, userId),
-        eq(classEnrollments.classId, classId),
-        eq(classEnrollments.status, "active")
-      )
-    )
-    .limit(1);
+  const enrollment = await prisma.classEnrollment.findFirst({
+    where: {
+      userId,
+      classId,
+      status: "ACTIVE",
+    },
+  });
 
   if (!enrollment) {
     return false;
   }
 
-  const [privilege] = await db
-    .select()
-    .from(mahasiswaPrivileges)
-    .where(
-      and(
-        eq(mahasiswaPrivileges.enrollmentId, enrollment.id),
-        eq(mahasiswaPrivileges.classId, classId),
-        eq(mahasiswaPrivileges.privilegeType, privilegeType)
-      )
-    )
-    .limit(1);
+  const privilege = await prisma.mahasiswaPrivilege.findFirst({
+    where: {
+      enrollmentId: enrollment.id,
+      classId,
+      privilegeType: toMahasiswaPrismaEnum(privilegeType),
+    },
+  });
 
   return !!privilege;
 }
@@ -130,33 +142,29 @@ export async function getMahasiswaPrivilegesForClass(
   userId: string,
   classId: string
 ): Promise<MahasiswaPrivilegeType[]> {
-  const [enrollment] = await db
-    .select()
-    .from(classEnrollments)
-    .where(
-      and(
-        eq(classEnrollments.userId, userId),
-        eq(classEnrollments.classId, classId),
-        eq(classEnrollments.status, "active")
-      )
-    )
-    .limit(1);
+  const enrollment = await prisma.classEnrollment.findFirst({
+    where: {
+      userId,
+      classId,
+      status: "ACTIVE",
+    },
+  });
 
   if (!enrollment) {
     return [];
   }
 
-  const privileges = await db
-    .select({ privilegeType: mahasiswaPrivileges.privilegeType })
-    .from(mahasiswaPrivileges)
-    .where(
-      and(
-        eq(mahasiswaPrivileges.enrollmentId, enrollment.id),
-        eq(mahasiswaPrivileges.classId, classId)
-      )
-    );
+  const privileges = await prisma.mahasiswaPrivilege.findMany({
+    where: {
+      enrollmentId: enrollment.id,
+      classId,
+    },
+    select: {
+      privilegeType: true,
+    },
+  });
 
-  return privileges.map((p) => p.privilegeType);
+  return privileges.map((p: { privilegeType: PrismaMahasiswaPrivilegeType }) => fromMahasiswaPrismaEnum(p.privilegeType));
 }
 
 // Check if user is enrolled in a class
@@ -164,17 +172,13 @@ export async function isEnrolledInClass(
   userId: string,
   classId: string
 ): Promise<boolean> {
-  const [enrollment] = await db
-    .select()
-    .from(classEnrollments)
-    .where(
-      and(
-        eq(classEnrollments.userId, userId),
-        eq(classEnrollments.classId, classId),
-        eq(classEnrollments.status, "active")
-      )
-    )
-    .limit(1);
+  const enrollment = await prisma.classEnrollment.findFirst({
+    where: {
+      userId,
+      classId,
+      status: "ACTIVE",
+    },
+  });
 
   return !!enrollment;
 }
@@ -184,17 +188,16 @@ export async function getEnrollmentId(
   userId: string,
   classId: string
 ): Promise<string | null> {
-  const [enrollment] = await db
-    .select({ id: classEnrollments.id })
-    .from(classEnrollments)
-    .where(
-      and(
-        eq(classEnrollments.userId, userId),
-        eq(classEnrollments.classId, classId),
-        eq(classEnrollments.status, "active")
-      )
-    )
-    .limit(1);
+  const enrollment = await prisma.classEnrollment.findFirst({
+    where: {
+      userId,
+      classId,
+      status: "ACTIVE",
+    },
+    select: {
+      id: true,
+    },
+  });
 
   return enrollment?.id || null;
 }

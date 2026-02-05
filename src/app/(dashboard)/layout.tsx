@@ -4,22 +4,16 @@ import { Header } from "@/components/layout/header";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { Toaster } from "@/components/ui/sonner";
 import { hasMahasiswaPrivilege } from "@/lib/auth/permissions";
-import { db } from "@/lib/db";
-import { classEnrollments } from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
+import prisma from "@/lib/prisma";
 
 async function checkKetuaUmum(userId: string): Promise<boolean> {
   // Get active enrollment
-  const [enrollment] = await db
-    .select()
-    .from(classEnrollments)
-    .where(
-      and(
-        eq(classEnrollments.userId, userId),
-        eq(classEnrollments.status, "active")
-      )
-    )
-    .limit(1);
+  const enrollment = await prisma.classEnrollment.findFirst({
+    where: {
+      userId,
+      status: "ACTIVE",
+    },
+  });
 
   if (!enrollment) return false;
 

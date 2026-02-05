@@ -1,18 +1,16 @@
 "use server";
 
-import { db } from "@/lib/db";
-import {
-  classes,
-  classEnrollments,
-  groups,
-  fanIlmu,
-  semesters,
-  users,
-} from "@/lib/db/schema";
-import { eq, and, count } from "drizzle-orm";
+import prisma from "@/lib/prisma";
 import { z } from "zod";
 import { requireRole } from "@/lib/auth/session";
 import { revalidatePath } from "next/cache";
+
+// Type conversion helpers
+type PrismaSemesterType = "GANJIL" | "GENAP";
+
+function semesterTypeToLowercase(type: PrismaSemesterType): "ganjil" | "genap" {
+  return type.toLowerCase() as "ganjil" | "genap";
+}
 
 // Validation schemas
 const createClassSchema = z.object({
@@ -37,69 +35,64 @@ export type ClassFormState = {
 export async function getClasses(semesterId?: string) {
   await requireRole(["admin"]);
 
-  const query = db
-    .select({
-      id: classes.id,
-      name: classes.name,
-      code: classes.code,
-      description: classes.description,
-      maxStudents: classes.maxStudents,
-      isActive: classes.isActive,
-      semesterId: classes.semesterId,
-      semesterType: semesters.type,
-      createdAt: classes.createdAt,
-    })
-    .from(classes)
-    .innerJoin(semesters, eq(classes.semesterId, semesters.id))
-    .orderBy(classes.name);
+  const classes = await prisma.class.findMany({
+    where: semesterId ? { semesterId } : undefined,
+    include: {
+      semester: {
+        select: { type: true },
+      },
+    },
+    orderBy: { name: "asc" },
+  });
 
-  if (semesterId) {
-    return query.where(eq(classes.semesterId, semesterId));
-  }
-
-  return query;
+  return classes.map((cls: typeof classes[number]) => ({
+    id: cls.id,
+    name: cls.name,
+    code: cls.code,
+    description: cls.description,
+    maxStudents: cls.maxStudents,
+    isActive: cls.isActive,
+    semesterId: cls.semesterId,
+    semesterType: semesterTypeToLowercase(cls.semester.type as PrismaSemesterType),
+    createdAt: cls.createdAt,
+  }));
 }
 
 export async function getClassById(id: string) {
   await requireRole(["admin"]);
 
-  const [cls] = await db
-    .select()
-    .from(classes)
-    .where(eq(classes.id, id))
-    .limit(1);
+  const cls = await prisma.class.findUnique({
+    where: { id },
+    include: {
+      groups: {
+        orderBy: { groupNumber: "asc" },
+      },
+      fanIlmu: true,
+      _count: {
+        select: {
+          enrollments: {
+            where: { status: "ACTIVE" },
+          },
+        },
+      },
+    },
+  });
 
   if (!cls) return null;
 
-  // Get enrollment count
-  const [enrollmentCount] = await db
-    .select({ count: count() })
-    .from(classEnrollments)
-    .where(
-      and(
-        eq(classEnrollments.classId, id),
-        eq(classEnrollments.status, "active")
-      )
-    );
-
-  // Get groups
-  const classGroups = await db
-    .select()
-    .from(groups)
-    .where(eq(groups.classId, id))
-    .orderBy(groups.groupNumber);
-
-  // Get fan ilmu
-  const classFanIlmu = await db
-    .select()
-    .from(fanIlmu)
-    .where(eq(fanIlmu.classId, id));
-
   return {
-    ...cls,
-    enrollmentCount: enrollmentCount?.count || 0,
-    groups: classGroups,
-    fanIlmu: classFanIlmu,
+    id: cls.id,
+    name: cls.name,
+    code: cls.code,
+    semesterId: cls.semesterId,
+    description: cls.description,
+    maxStudents: cls.maxStudents,
+    isActive: cls.isActive,
+    createdAt: cls.createdAt,
+    updatedAt: cls.updatedAt,
+    enrollmentCount: cls._count.enrollments,
+    groups: cls.groups,
+    fanIlmu: cls.fanIlmu,
   };
 }
 
@@ -129,12 +122,14 @@ export async function createClass(
     validatedFields.data;
 
   try {
-    await db.insert(classes).values({
-      name,
-      code,
-      semesterId,
-      description,
-      maxStudents,
+    await prisma.class.create({
+      data: {
+        name,
+        code,
+        semesterId,
+        description,
+        maxStudents,
+      },
     });
 
     revalidatePath("/admin/classes");
@@ -173,18 +168,17 @@ export async function updateClass(
     validatedFields.data;
 
   try {
-    await db
-      .update(classes)
-      .set({
+    await prisma.class.update({
+      where: { id },
+      data: {
         name,
         code,
         semesterId,
         description,
         maxStudents,
         isActive,
-        updatedAt: new Date(),
-      })
-      .where(eq(classes.id, id));
+      },
+    });
 
     revalidatePath("/admin/classes");
     return { success: true, message: "Kelas berhasil diperbarui" };
@@ -202,7 +196,10 @@ export async function deleteClass(id: string): Promise<ClassFormState> {
   }
 
   try {
-    await db.delete(classes).where(eq(classes.id, id));
+    await prisma.class.delete({
+      where: { id },
+    });
+
     revalidatePath("/admin/classes");
     return { success: true, message: "Kelas berhasil dihapus" };
   } catch (error) {
@@ -225,27 +222,25 @@ export async function enrollStudent(
 
   try {
     // Check if already enrolled
-    const [existing] = await db
-      .select()
-      .from(classEnrollments)
-      .where(
-        and(
-          eq(classEnrollments.userId, userId),
-          eq(classEnrollments.classId, classId),
-          eq(classEnrollments.semesterId, semesterId)
-        )
-      )
-      .limit(1);
+    const existing = await prisma.classEnrollment.findFirst({
+      where: {
+        userId,
+        classId,
+        semesterId,
+      },
+    });
 
     if (existing) {
       return { errors: { general: ["Mahasiswa sudah terdaftar di kelas ini"] } };
     }
 
-    await db.insert(classEnrollments).values({
-      userId,
-      classId,
-      semesterId,
-      status: "active",
+    await prisma.classEnrollment.create({
+      data: {
+        userId,
+        classId,
+        semesterId,
+        status: "ACTIVE",
+      },
     });
 
     revalidatePath(`/admin/classes/${classId}`);
@@ -266,7 +261,10 @@ export async function removeEnrollment(
   }
 
   try {
-    await db.delete(classEnrollments).where(eq(classEnrollments.id, enrollmentId));
+    await prisma.classEnrollment.delete({
+      where: { id: enrollmentId },
+    });
+
     revalidatePath("/admin/classes");
     return { success: true, message: "Enrollment berhasil dihapus" };
   } catch (error) {
@@ -288,10 +286,12 @@ export async function createGroup(
   }
 
   try {
-    await db.insert(groups).values({
-      classId,
-      name,
-      groupNumber,
+    await prisma.group.create({
+      data: {
+        classId,
+        name,
+        groupNumber,
+      },
     });
 
     revalidatePath(`/admin/classes/${classId}`);
@@ -315,10 +315,12 @@ export async function createFanIlmu(
   }
 
   try {
-    await db.insert(fanIlmu).values({
-      classId,
-      name,
-      description,
+    await prisma.fanIlmu.create({
+      data: {
+        classId,
+        name,
+        description,
+      },
     });
 
     revalidatePath(`/admin/classes/${classId}`);
@@ -334,47 +336,81 @@ export async function getAvailableStudents(classId: string, semesterId: string) 
   await requireRole(["admin"]);
 
   // Get students not enrolled in this class for this semester
-  const enrolled = await db
-    .select({ userId: classEnrollments.userId })
-    .from(classEnrollments)
-    .where(
-      and(
-        eq(classEnrollments.classId, classId),
-        eq(classEnrollments.semesterId, semesterId)
-      )
-    );
+  const enrolled = await prisma.classEnrollment.findMany({
+    where: {
+      classId,
+      semesterId,
+    },
+    select: { userId: true },
+  });
 
-  const enrolledIds = enrolled.map((e) => e.userId);
+  const enrolledIds = enrolled.map((e: { userId: string }) => e.userId);
 
-  const students = await db
-    .select()
-    .from(users)
-    .where(
-      and(
-        eq(users.userType, "mahasiswa"),
-        eq(users.isActive, true)
-      )
-    )
-    .orderBy(users.name);
+  const students = await prisma.user.findMany({
+    where: {
+      userType: "MAHASISWA",
+      isActive: true,
+      id: {
+        notIn: enrolledIds.length > 0 ? enrolledIds : [""],
+      },
+    },
+    orderBy: { name: "asc" },
+  });
 
-  return students.filter((s) => !enrolledIds.includes(s.id));
+  return students;
 }
 
 // Get class enrollments with user details
 export async function getClassEnrollments(classId: string) {
   await requireRole(["admin"]);
 
-  return db
-    .select({
-      id: classEnrollments.id,
-      userId: classEnrollments.userId,
-      userName: users.name,
-      userEmail: users.email,
-      status: classEnrollments.status,
-      enrolledAt: classEnrollments.enrolledAt,
-    })
-    .from(classEnrollments)
-    .innerJoin(users, eq(classEnrollments.userId, users.id))
-    .where(eq(classEnrollments.classId, classId))
-    .orderBy(users.name);
+  const enrollments = await prisma.classEnrollment.findMany({
+    where: { classId },
+    include: {
+      user: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+        },
+      },
+    },
+    orderBy: {
+      user: { name: "asc" },
+    },
+  });
+
+  return enrollments.map((e: typeof enrollments[number]) => ({
+    id: e.id,
+    userId: e.userId,
+    userName: e.user.name,
+    userEmail: e.user.email,
+    status: e.status.toLowerCase(),
+    enrolledAt: e.enrolledAt,
+  }));
+}
+
+// Get semesters for dropdown
+export async function getSemesters() {
+  await requireRole(["admin"]);
+
+  const semesters = await prisma.semester.findMany({
+    include: {
+      academicYear: {
+        select: { name: true },
+      },
+    },
+    orderBy: [
+      { academicYear: { startDate: "desc" } },
+      { startDate: "desc" },
+    ],
+  });
+
+  return semesters.map((s: typeof semesters[number]) => ({
+    id: s.id,
+    type: semesterTypeToLowercase(s.type as PrismaSemesterType),
+    academicYearName: s.academicYear.name,
+    isActive: s.isActive,
+    label: `${s.academicYear.name} - ${s.type}`,
+  }));
 }

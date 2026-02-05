@@ -1,9 +1,7 @@
 import { redirect } from "next/navigation";
 import { requireRole } from "@/lib/auth/session";
 import { getClasses } from "@/actions/admin/classes";
-import { db } from "@/lib/db";
-import { semesters } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import prisma from "@/lib/prisma";
 import { ClassesTable } from "./classes-table";
 import { Button } from "@/components/ui/button";
 import { Plus } from "lucide-react";
@@ -16,11 +14,9 @@ export default async function ClassesPage() {
     redirect("/login");
   }
 
-  const [activeSemester] = await db
-    .select()
-    .from(semesters)
-    .where(eq(semesters.isActive, true))
-    .limit(1);
+  const activeSemester = await prisma.semester.findFirst({
+    where: { isActive: true },
+  });
 
   const classes = activeSemester
     ? await getClasses(activeSemester.id)
@@ -34,7 +30,7 @@ export default async function ClassesPage() {
           <p className="text-muted-foreground">
             Kelola kelas untuk semester{" "}
             {activeSemester
-              ? `${activeSemester.type === "ganjil" ? "Ganjil" : "Genap"}`
+              ? `${activeSemester.type === "GANJIL" ? "Ganjil" : "Genap"}`
               : "(Belum ada semester aktif)"}
           </p>
         </div>

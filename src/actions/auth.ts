@@ -1,13 +1,25 @@
 "use server";
 
-import { db } from "@/lib/db";
-import { users } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import prisma from "@/lib/prisma";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { createSession, destroySession, getSession } from "@/lib/auth/session";
+import { createSession, destroySession, getSession, stringToUserType } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
+
+// User type enum values
+type PrismaUserType = "ADMIN" | "DOSEN" | "MAHASISWA";
+type SessionUserType = "admin" | "dosen" | "mahasiswa";
+
+// Helper to convert Prisma UserType enum to lowercase string
+function userTypeToString(userType: PrismaUserType): SessionUserType {
+  const mapping: Record<PrismaUserType, SessionUserType> = {
+    ADMIN: "admin",
+    DOSEN: "dosen",
+    MAHASISWA: "mahasiswa",
+  };
+  return mapping[userType];
+}
 
 // Validation schemas
 const loginSchema = z.object({
@@ -67,11 +79,9 @@ export async function login(
 
   try {
     // Find user by email
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, email.toLowerCase()))
-      .limit(1);
+    const user = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
 
     if (!user) {
       return {
@@ -104,7 +114,7 @@ export async function login(
       id: user.id,
       email: user.email,
       name: user.name,
-      userType: user.userType,
+      userType: userTypeToString(user.userType as PrismaUserType),
       photoUrl: user.photoUrl,
     });
 
@@ -142,11 +152,9 @@ export async function register(
 
   try {
     // Check if email already exists
-    const [existingUser] = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, email.toLowerCase()))
-      .limit(1);
+    const existingUser = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
 
     if (existingUser) {
       return {
@@ -160,22 +168,21 @@ export async function register(
     const passwordHash = await bcrypt.hash(password, 10);
 
     // Create user
-    const [newUser] = await db
-      .insert(users)
-      .values({
+    const newUser = await prisma.user.create({
+      data: {
         name,
         email: email.toLowerCase(),
         passwordHash,
-        userType,
-      })
-      .returning();
+        userType: stringToUserType(userType),
+      },
+    });
 
     // Create session
     await createSession({
       id: newUser.id,
       email: newUser.email,
       name: newUser.name,
-      userType: newUser.userType,
+      userType: userTypeToString(newUser.userType as PrismaUserType),
       photoUrl: newUser.photoUrl,
     });
 

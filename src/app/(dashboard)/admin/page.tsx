@@ -1,61 +1,46 @@
 import { redirect } from "next/navigation";
 import { requireRole } from "@/lib/auth/session";
-import { db } from "@/lib/db";
-import { users, classes, classEnrollments, semesters } from "@/lib/db/schema";
-import { eq, count, and } from "drizzle-orm";
+import prisma from "@/lib/prisma";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Users, Building, GraduationCap, BookOpen } from "lucide-react";
 
 async function getStats() {
   // Get total users by type
-  const userStats = await db
-    .select({
-      userType: users.userType,
-      count: count(),
-    })
-    .from(users)
-    .where(eq(users.isActive, true))
-    .groupBy(users.userType);
+  const userStats = await prisma.user.groupBy({
+    by: ["userType"],
+    where: { isActive: true },
+    _count: { id: true },
+  });
 
   // Get active semester
-  const [activeSemester] = await db
-    .select()
-    .from(semesters)
-    .where(eq(semesters.isActive, true))
-    .limit(1);
+  const activeSemester = await prisma.semester.findFirst({
+    where: { isActive: true },
+  });
 
   // Get total classes in active semester
   let totalClasses = 0;
   let totalEnrollments = 0;
 
   if (activeSemester) {
-    const [classCount] = await db
-      .select({ count: count() })
-      .from(classes)
-      .where(
-        and(
-          eq(classes.semesterId, activeSemester.id),
-          eq(classes.isActive, true)
-        )
-      );
-    totalClasses = classCount?.count || 0;
+    totalClasses = await prisma.class.count({
+      where: {
+        semesterId: activeSemester.id,
+        isActive: true,
+      },
+    });
 
-    const [enrollmentCount] = await db
-      .select({ count: count() })
-      .from(classEnrollments)
-      .where(
-        and(
-          eq(classEnrollments.semesterId, activeSemester.id),
-          eq(classEnrollments.status, "active")
-        )
-      );
-    totalEnrollments = enrollmentCount?.count || 0;
+    totalEnrollments = await prisma.classEnrollment.count({
+      where: {
+        semesterId: activeSemester.id,
+        status: "ACTIVE",
+      },
+    });
   }
 
-  const totalAdmin = userStats.find((u) => u.userType === "admin")?.count || 0;
-  const totalDosen = userStats.find((u) => u.userType === "dosen")?.count || 0;
-  const totalMahasiswa =
-    userStats.find((u) => u.userType === "mahasiswa")?.count || 0;
+  type UserStat = { userType: string; _count: { id: number } };
+  const totalAdmin = userStats.find((u: UserStat) => u.userType === "ADMIN")?._count.id || 0;
+  const totalDosen = userStats.find((u: UserStat) => u.userType === "DOSEN")?._count.id || 0;
+  const totalMahasiswa = userStats.find((u: UserStat) => u.userType === "MAHASISWA")?._count.id || 0;
 
   return {
     totalAdmin,
@@ -118,7 +103,7 @@ export default async function AdminDashboardPage() {
             <div className="text-2xl font-bold">{stats.totalClasses}</div>
             <p className="text-xs text-muted-foreground">
               Semester{" "}
-              {stats.activeSemester?.type === "ganjil" ? "Ganjil" : "Genap"}
+              {stats.activeSemester?.type === "GANJIL" ? "Ganjil" : "Genap"}
             </p>
           </CardContent>
         </Card>
@@ -176,7 +161,7 @@ export default async function AdminDashboardPage() {
             {stats.activeSemester ? (
               <div className="space-y-2">
                 <p className="font-medium">
-                  Semester {stats.activeSemester.type === "ganjil" ? "Ganjil" : "Genap"}
+                  Semester {stats.activeSemester.type === "GANJIL" ? "Ganjil" : "Genap"}
                 </p>
                 <p className="text-sm text-muted-foreground">
                   {new Date(stats.activeSemester.startDate).toLocaleDateString("id-ID")} -{" "}
