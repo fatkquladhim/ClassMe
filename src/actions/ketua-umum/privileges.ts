@@ -1,17 +1,33 @@
 "use server";
 
-import { db } from "@/lib/db";
-import {
-  mahasiswaPrivileges,
-  classEnrollments,
-  users,
-  groups,
-  fanIlmu,
-} from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
+import prisma from "@/lib/prisma";
 import { getSession } from "@/lib/auth/session";
 import { isKetuaUmum, getEnrollmentId } from "@/lib/auth/permissions";
 import { revalidatePath } from "next/cache";
+
+// Type helpers
+type PrismaMahasiswaPrivilegeType =
+  | "KETUA_UMUM"
+  | "KETUA_KELOMPOK"
+  | "KAMTIB"
+  | "KETUA_FAN_ILMU"
+  | "SEKRETARIS"
+  | "BENDAHARA";
+
+type MahasiswaPrivilegeType =
+  | "ketua_kelompok"
+  | "kamtib"
+  | "ketua_fan_ilmu"
+  | "sekretaris"
+  | "bendahara";
+
+function toMahasiswaPrismaEnum(type: string): PrismaMahasiswaPrivilegeType {
+  return type.toUpperCase() as PrismaMahasiswaPrivilegeType;
+}
+
+function fromMahasiswaPrismaEnum(type: PrismaMahasiswaPrivilegeType): string {
+  return type.toLowerCase();
+}
 
 export type PrivilegeFormState = {
   errors?: Record<string, string[]>;
@@ -38,48 +54,54 @@ async function verifyKetuaUmum(classId: string) {
 export async function getClassMembersWithPrivileges(classId: string) {
   await verifyKetuaUmum(classId);
 
-  const enrollments = await db
-    .select({
-      enrollmentId: classEnrollments.id,
-      userId: classEnrollments.userId,
-      userName: users.name,
-      userEmail: users.email,
-    })
-    .from(classEnrollments)
-    .innerJoin(users, eq(classEnrollments.userId, users.id))
-    .where(
-      and(
-        eq(classEnrollments.classId, classId),
-        eq(classEnrollments.status, "active")
-      )
-    )
-    .orderBy(users.name);
-
-  const privileges = await db
-    .select({
-      enrollmentId: mahasiswaPrivileges.enrollmentId,
-      privilegeType: mahasiswaPrivileges.privilegeType,
-      groupId: mahasiswaPrivileges.groupId,
-      fanIlmuId: mahasiswaPrivileges.fanIlmuId,
-    })
-    .from(mahasiswaPrivileges)
-    .where(eq(mahasiswaPrivileges.classId, classId));
+  const enrollments = await prisma.classEnrollment.findMany({
+    where: {
+      classId,
+      status: "ACTIVE",
+    },
+    include: {
+      user: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+        },
+      },
+      privileges: {
+        select: {
+          enrollmentId: true,
+          privilegeType: true,
+          groupId: true,
+          fanIlmuId: true,
+        },
+      },
+    },
+    orderBy: {
+      user: { name: "asc" },
+    },
+  });
 
   // Get groups and fan ilmu for reference
-  const classGroups = await db
-    .select()
-    .from(groups)
-    .where(eq(groups.classId, classId));
+  const classGroups = await prisma.group.findMany({
+    where: { classId },
+  });
 
-  const classFanIlmu = await db
-    .select()
-    .from(fanIlmu)
-    .where(eq(fanIlmu.classId, classId));
+  const classFanIlmu = await prisma.fanIlmu.findMany({
+    where: { classId },
+  });
 
   return {
-    members: enrollments.map((e) => ({
-      ...e,
-      privileges: privileges.filter((p) => p.enrollmentId === e.enrollmentId),
+    members: enrollments.map((e: typeof enrollments[number]) => ({
+      enrollmentId: e.id,
+      userId: e.userId,
+      userName: e.user.name,
+      userEmail: e.user.email,
+      privileges: e.privileges.map((p: typeof e.privileges[number]) => ({
+        enrollmentId: p.enrollmentId,
+        privilegeType: fromMahasiswaPrismaEnum(p.privilegeType as PrismaMahasiswaPrivilegeType),
+        groupId: p.groupId,
+        fanIlmuId: p.fanIlmuId,
+      })),
     })),
     groups: classGroups,
     fanIlmu: classFanIlmu,
@@ -90,7 +112,7 @@ export async function getClassMembersWithPrivileges(classId: string) {
 export async function assignMahasiswaPrivilege(
   classId: string,
   targetUserId: string,
-  privilegeType: "ketua_kelompok" | "kamtib" | "ketua_fan_ilmu" | "sekretaris" | "bendahara",
+  privilegeType: MahasiswaPrivilegeType,
   options?: { groupId?: string; fanIlmuId?: string }
 ): Promise<PrivilegeFormState> {
   let session;
@@ -118,50 +140,46 @@ export async function assignMahasiswaPrivilege(
 
     // For unique roles (sekretaris, bendahara, kamtib), remove existing
     if (["sekretaris", "bendahara", "kamtib"].includes(privilegeType)) {
-      await db
-        .delete(mahasiswaPrivileges)
-        .where(
-          and(
-            eq(mahasiswaPrivileges.classId, classId),
-            eq(mahasiswaPrivileges.privilegeType, privilegeType)
-          )
-        );
+      await prisma.mahasiswaPrivilege.deleteMany({
+        where: {
+          classId,
+          privilegeType: toMahasiswaPrismaEnum(privilegeType),
+        },
+      });
     }
 
     // For ketua kelompok, remove existing for that group
     if (privilegeType === "ketua_kelompok" && options?.groupId) {
-      await db
-        .delete(mahasiswaPrivileges)
-        .where(
-          and(
-            eq(mahasiswaPrivileges.classId, classId),
-            eq(mahasiswaPrivileges.privilegeType, "ketua_kelompok"),
-            eq(mahasiswaPrivileges.groupId, options.groupId)
-          )
-        );
+      await prisma.mahasiswaPrivilege.deleteMany({
+        where: {
+          classId,
+          privilegeType: "KETUA_KELOMPOK",
+          groupId: options.groupId,
+        },
+      });
     }
 
     // For ketua fan ilmu, remove existing for that fan ilmu
     if (privilegeType === "ketua_fan_ilmu" && options?.fanIlmuId) {
-      await db
-        .delete(mahasiswaPrivileges)
-        .where(
-          and(
-            eq(mahasiswaPrivileges.classId, classId),
-            eq(mahasiswaPrivileges.privilegeType, "ketua_fan_ilmu"),
-            eq(mahasiswaPrivileges.fanIlmuId, options.fanIlmuId)
-          )
-        );
+      await prisma.mahasiswaPrivilege.deleteMany({
+        where: {
+          classId,
+          privilegeType: "KETUA_FAN_ILMU",
+          fanIlmuId: options.fanIlmuId,
+        },
+      });
     }
 
     // Assign privilege
-    await db.insert(mahasiswaPrivileges).values({
-      enrollmentId,
-      classId,
-      privilegeType,
-      groupId: options?.groupId,
-      fanIlmuId: options?.fanIlmuId,
-      assignedBy: session.user.id,
+    await prisma.mahasiswaPrivilege.create({
+      data: {
+        enrollmentId,
+        classId,
+        privilegeType: toMahasiswaPrismaEnum(privilegeType),
+        groupId: options?.groupId,
+        fanIlmuId: options?.fanIlmuId,
+        assignedBy: session.user.id,
+      },
     });
 
     revalidatePath(`/mahasiswa/privileges`);
@@ -190,15 +208,13 @@ export async function removeMahasiswaPrivilege(
       return { errors: { general: ["Tidak dapat menghapus privilege Ketua Umum"] } };
     }
 
-    await db
-      .delete(mahasiswaPrivileges)
-      .where(
-        and(
-          eq(mahasiswaPrivileges.enrollmentId, enrollmentId),
-          eq(mahasiswaPrivileges.classId, classId),
-          eq(mahasiswaPrivileges.privilegeType, privilegeType as typeof mahasiswaPrivileges.privilegeType.enumValues[number])
-        )
-      );
+    await prisma.mahasiswaPrivilege.deleteMany({
+      where: {
+        enrollmentId,
+        classId,
+        privilegeType: toMahasiswaPrismaEnum(privilegeType),
+      },
+    });
 
     revalidatePath(`/mahasiswa/privileges`);
     return { success: true, message: "Privilege berhasil dihapus" };
@@ -212,47 +228,59 @@ export async function removeMahasiswaPrivilege(
 export async function getClassPrivilegeSummary(classId: string) {
   await verifyKetuaUmum(classId);
 
-  const privileges = await db
-    .select({
-      privilegeType: mahasiswaPrivileges.privilegeType,
-      userName: users.name,
-      groupId: mahasiswaPrivileges.groupId,
-      fanIlmuId: mahasiswaPrivileges.fanIlmuId,
-    })
-    .from(mahasiswaPrivileges)
-    .innerJoin(
-      classEnrollments,
-      eq(mahasiswaPrivileges.enrollmentId, classEnrollments.id)
-    )
-    .innerJoin(users, eq(classEnrollments.userId, users.id))
-    .where(eq(mahasiswaPrivileges.classId, classId));
+  const privileges = await prisma.mahasiswaPrivilege.findMany({
+    where: { classId },
+    include: {
+      enrollment: {
+        include: {
+          user: {
+            select: {
+              name: true,
+            },
+          },
+        },
+      },
+    },
+  });
 
-  const classGroups = await db
-    .select()
-    .from(groups)
-    .where(eq(groups.classId, classId));
+  const classGroups = await prisma.group.findMany({
+    where: { classId },
+  });
 
-  const classFanIlmu = await db
-    .select()
-    .from(fanIlmu)
-    .where(eq(fanIlmu.classId, classId));
+  const classFanIlmu = await prisma.fanIlmu.findMany({
+    where: { classId },
+  });
+
+  type MappedPrivilege = {
+    privilegeType: string;
+    userName: string;
+    groupId: string | null;
+    fanIlmuId: string | null;
+  };
+
+  const mappedPrivileges: MappedPrivilege[] = privileges.map((p: typeof privileges[number]) => ({
+    privilegeType: fromMahasiswaPrismaEnum(p.privilegeType as PrismaMahasiswaPrivilegeType),
+    userName: p.enrollment.user.name,
+    groupId: p.groupId,
+    fanIlmuId: p.fanIlmuId,
+  }));
 
   return {
-    ketuaUmum: privileges.find((p) => p.privilegeType === "ketua_umum"),
-    sekretaris: privileges.find((p) => p.privilegeType === "sekretaris"),
-    bendahara: privileges.find((p) => p.privilegeType === "bendahara"),
-    kamtib: privileges.find((p) => p.privilegeType === "kamtib"),
-    ketuaKelompok: privileges
-      .filter((p) => p.privilegeType === "ketua_kelompok")
-      .map((p) => ({
+    ketuaUmum: mappedPrivileges.find((p: MappedPrivilege) => p.privilegeType === "ketua_umum"),
+    sekretaris: mappedPrivileges.find((p: MappedPrivilege) => p.privilegeType === "sekretaris"),
+    bendahara: mappedPrivileges.find((p: MappedPrivilege) => p.privilegeType === "bendahara"),
+    kamtib: mappedPrivileges.find((p: MappedPrivilege) => p.privilegeType === "kamtib"),
+    ketuaKelompok: mappedPrivileges
+      .filter((p: MappedPrivilege) => p.privilegeType === "ketua_kelompok")
+      .map((p: MappedPrivilege) => ({
         ...p,
-        group: classGroups.find((g) => g.id === p.groupId),
+        group: classGroups.find((g: typeof classGroups[number]) => g.id === p.groupId),
       })),
-    ketuaFanIlmu: privileges
-      .filter((p) => p.privilegeType === "ketua_fan_ilmu")
-      .map((p) => ({
+    ketuaFanIlmu: mappedPrivileges
+      .filter((p: MappedPrivilege) => p.privilegeType === "ketua_fan_ilmu")
+      .map((p: MappedPrivilege) => ({
         ...p,
-        fanIlmu: classFanIlmu.find((f) => f.id === p.fanIlmuId),
+        fanIlmu: classFanIlmu.find((f: typeof classFanIlmu[number]) => f.id === p.fanIlmuId),
       })),
   };
 }

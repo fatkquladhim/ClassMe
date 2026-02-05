@@ -1,12 +1,17 @@
 "use server";
 
-import { db } from "@/lib/db";
-import { users } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import prisma from "@/lib/prisma";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { requireRole } from "@/lib/auth/session";
+import { requireRole, stringToUserType } from "@/lib/auth/session";
 import { revalidatePath } from "next/cache";
+
+// User type conversion helpers
+type PrismaUserType = "ADMIN" | "DOSEN" | "MAHASISWA";
+
+function userTypeToLowercase(userType: PrismaUserType): "admin" | "dosen" | "mahasiswa" {
+  return userType.toLowerCase() as "admin" | "dosen" | "mahasiswa";
+}
 
 // Validation schemas
 const createUserSchema = z.object({
@@ -32,17 +37,57 @@ export type UserFormState = {
   message?: string;
 };
 
-export async function getUsers() {
+// User type for exports
+export type User = {
+  id: string;
+  email: string;
+  name: string;
+  passwordHash: string;
+  phone: string | null;
+  photoUrl: string | null;
+  userType: "admin" | "dosen" | "mahasiswa";
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export async function getUsers(): Promise<User[]> {
   await requireRole(["admin"]);
 
-  return db.select().from(users).orderBy(users.name);
+  const dbUsers = await prisma.user.findMany({
+    orderBy: { name: "asc" },
+  });
+
+  return dbUsers.map((user: {
+    id: string;
+    email: string;
+    name: string;
+    passwordHash: string;
+    phone: string | null;
+    photoUrl: string | null;
+    userType: PrismaUserType;
+    isActive: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+  }) => ({
+    ...user,
+    userType: userTypeToLowercase(user.userType),
+  }));
 }
 
-export async function getUserById(id: string) {
+export async function getUserById(id: string): Promise<User | null> {
   await requireRole(["admin"]);
 
-  const [user] = await db.select().from(users).where(eq(users.id, id)).limit(1);
-  return user || null;
+  const user = await prisma.user.findUnique({
+    where: { id },
+  });
+
+  if (!user) return null;
+
+  return {
+    ...user,
+    userType: userTypeToLowercase(user.userType as PrismaUserType),
+  };
 }
 
 export async function createUser(
@@ -71,11 +116,9 @@ export async function createUser(
 
   try {
     // Check if email exists
-    const [existing] = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, email.toLowerCase()))
-      .limit(1);
+    const existing = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
 
     if (existing) {
       return { errors: { email: ["Email sudah terdaftar"] } };
@@ -83,12 +126,14 @@ export async function createUser(
 
     const passwordHash = await bcrypt.hash(password, 10);
 
-    await db.insert(users).values({
-      name,
-      email: email.toLowerCase(),
-      passwordHash,
-      userType,
-      phone,
+    await prisma.user.create({
+      data: {
+        name,
+        email: email.toLowerCase(),
+        passwordHash,
+        userType: stringToUserType(userType),
+        phone,
+      },
     });
 
     revalidatePath("/admin/users");
@@ -126,27 +171,24 @@ export async function updateUser(
 
   try {
     // Check if email exists for other users
-    const [existing] = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, email.toLowerCase()))
-      .limit(1);
+    const existing = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
 
     if (existing && existing.id !== id) {
       return { errors: { email: ["Email sudah digunakan pengguna lain"] } };
     }
 
-    await db
-      .update(users)
-      .set({
+    await prisma.user.update({
+      where: { id },
+      data: {
         name,
         email: email.toLowerCase(),
-        userType,
+        userType: stringToUserType(userType),
         phone,
         isActive,
-        updatedAt: new Date(),
-      })
-      .where(eq(users.id, id));
+      },
+    });
 
     revalidatePath("/admin/users");
     return { success: true, message: "Pengguna berhasil diperbarui" };
@@ -164,7 +206,10 @@ export async function deleteUser(id: string): Promise<UserFormState> {
   }
 
   try {
-    await db.delete(users).where(eq(users.id, id));
+    await prisma.user.delete({
+      where: { id },
+    });
+
     revalidatePath("/admin/users");
     return { success: true, message: "Pengguna berhasil dihapus" };
   } catch (error) {
@@ -181,10 +226,10 @@ export async function toggleUserStatus(id: string, isActive: boolean): Promise<U
   }
 
   try {
-    await db
-      .update(users)
-      .set({ isActive, updatedAt: new Date() })
-      .where(eq(users.id, id));
+    await prisma.user.update({
+      where: { id },
+      data: { isActive },
+    });
 
     revalidatePath("/admin/users");
     return {

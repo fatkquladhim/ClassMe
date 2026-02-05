@@ -1,16 +1,31 @@
 "use server";
 
-import { db } from "@/lib/db";
-import {
-  dosenPrivileges,
-  mahasiswaPrivileges,
-  users,
-  classes,
-  classEnrollments,
-} from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
+import prisma from "@/lib/prisma";
 import { requireRole, getSession } from "@/lib/auth/session";
 import { revalidatePath } from "next/cache";
+
+// Type helpers
+type PrismaDosenPrivilegeType =
+  | "DOSEN_PENDAMPING"
+  | "WALI_KELAS"
+  | "PENGURUS_HAFALAN"
+  | "PENGURUS_CAPAIAN_MATERI"
+  | "PENGURUS_KELAS";
+
+type DosenPrivilegeType =
+  | "dosen_pendamping"
+  | "wali_kelas"
+  | "pengurus_hafalan"
+  | "pengurus_capaian_materi"
+  | "pengurus_kelas";
+
+function toDosenPrismaEnum(type: DosenPrivilegeType): PrismaDosenPrivilegeType {
+  return type.toUpperCase() as PrismaDosenPrivilegeType;
+}
+
+function fromDosenPrismaEnum(type: PrismaDosenPrivilegeType): DosenPrivilegeType {
+  return type.toLowerCase() as DosenPrivilegeType;
+}
 
 export type PrivilegeFormState = {
   errors?: Record<string, string[]>;
@@ -22,28 +37,33 @@ export type PrivilegeFormState = {
 export async function getDosenWithPrivileges() {
   await requireRole(["admin"]);
 
-  const dosenList = await db
-    .select()
-    .from(users)
-    .where(
-      and(eq(users.userType, "dosen"), eq(users.isActive, true))
-    )
-    .orderBy(users.name);
+  const dosenList = await prisma.user.findMany({
+    where: {
+      userType: "DOSEN",
+      isActive: true,
+    },
+    orderBy: { name: "asc" },
+  });
 
-  const privileges = await db
-    .select({
-      userId: dosenPrivileges.userId,
-      classId: dosenPrivileges.classId,
-      className: classes.name,
-      privilegeType: dosenPrivileges.privilegeType,
-    })
-    .from(dosenPrivileges)
-    .innerJoin(classes, eq(dosenPrivileges.classId, classes.id));
+  const privileges = await prisma.dosenPrivilege.findMany({
+    include: {
+      class: {
+        select: { name: true },
+      },
+    },
+  });
 
   // Map privileges to dosen
-  const dosenWithPrivileges = dosenList.map((dosen) => ({
+  const dosenWithPrivileges = dosenList.map((dosen: typeof dosenList[number]) => ({
     ...dosen,
-    privileges: privileges.filter((p) => p.userId === dosen.id),
+    privileges: privileges
+      .filter((p: typeof privileges[number]) => p.userId === dosen.id)
+      .map((p: typeof privileges[number]) => ({
+        userId: p.userId,
+        classId: p.classId,
+        className: p.class.name,
+        privilegeType: fromDosenPrismaEnum(p.privilegeType as PrismaDosenPrivilegeType),
+      })),
   }));
 
   return dosenWithPrivileges;
@@ -53,7 +73,7 @@ export async function getDosenWithPrivileges() {
 export async function assignDosenPrivilege(
   userId: string,
   classId: string,
-  privilegeType: "dosen_pendamping" | "wali_kelas" | "pengurus_hafalan" | "pengurus_capaian_materi" | "pengurus_kelas"
+  privilegeType: DosenPrivilegeType
 ): Promise<PrivilegeFormState> {
   let session;
   try {
@@ -64,27 +84,25 @@ export async function assignDosenPrivilege(
 
   try {
     // Check if privilege already exists
-    const [existing] = await db
-      .select()
-      .from(dosenPrivileges)
-      .where(
-        and(
-          eq(dosenPrivileges.userId, userId),
-          eq(dosenPrivileges.classId, classId),
-          eq(dosenPrivileges.privilegeType, privilegeType)
-        )
-      )
-      .limit(1);
+    const existing = await prisma.dosenPrivilege.findFirst({
+      where: {
+        userId,
+        classId,
+        privilegeType: toDosenPrismaEnum(privilegeType),
+      },
+    });
 
     if (existing) {
       return { errors: { general: ["Privilege sudah diberikan"] } };
     }
 
-    await db.insert(dosenPrivileges).values({
-      userId,
-      classId,
-      privilegeType,
-      assignedBy: session.user.id,
+    await prisma.dosenPrivilege.create({
+      data: {
+        userId,
+        classId,
+        privilegeType: toDosenPrismaEnum(privilegeType),
+        assignedBy: session.user.id,
+      },
     });
 
     revalidatePath("/admin/privileges");
@@ -108,15 +126,13 @@ export async function removeDosenPrivilege(
   }
 
   try {
-    await db
-      .delete(dosenPrivileges)
-      .where(
-        and(
-          eq(dosenPrivileges.userId, userId),
-          eq(dosenPrivileges.classId, classId),
-          eq(dosenPrivileges.privilegeType, privilegeType as typeof dosenPrivileges.privilegeType.enumValues[number])
-        )
-      );
+    await prisma.dosenPrivilege.deleteMany({
+      where: {
+        userId,
+        classId,
+        privilegeType: toDosenPrismaEnum(privilegeType as DosenPrivilegeType),
+      },
+    });
 
     revalidatePath("/admin/privileges");
     return { success: true, message: "Privilege berhasil dihapus" };
@@ -140,47 +156,41 @@ export async function assignKetuaUmum(
 
   try {
     // Get enrollment
-    const [enrollment] = await db
-      .select()
-      .from(classEnrollments)
-      .where(
-        and(
-          eq(classEnrollments.userId, userId),
-          eq(classEnrollments.classId, classId),
-          eq(classEnrollments.status, "active")
-        )
-      )
-      .limit(1);
+    const enrollment = await prisma.classEnrollment.findFirst({
+      where: {
+        userId,
+        classId,
+        status: "ACTIVE",
+      },
+    });
 
     if (!enrollment) {
       return { errors: { general: ["Mahasiswa tidak terdaftar di kelas ini"] } };
     }
 
     // Check if there's already a ketua umum
-    const [existingKetuaUmum] = await db
-      .select()
-      .from(mahasiswaPrivileges)
-      .where(
-        and(
-          eq(mahasiswaPrivileges.classId, classId),
-          eq(mahasiswaPrivileges.privilegeType, "ketua_umum")
-        )
-      )
-      .limit(1);
+    const existingKetuaUmum = await prisma.mahasiswaPrivilege.findFirst({
+      where: {
+        classId,
+        privilegeType: "KETUA_UMUM",
+      },
+    });
 
     if (existingKetuaUmum) {
       // Remove existing ketua umum
-      await db
-        .delete(mahasiswaPrivileges)
-        .where(eq(mahasiswaPrivileges.id, existingKetuaUmum.id));
+      await prisma.mahasiswaPrivilege.delete({
+        where: { id: existingKetuaUmum.id },
+      });
     }
 
     // Assign new ketua umum
-    await db.insert(mahasiswaPrivileges).values({
-      enrollmentId: enrollment.id,
-      classId,
-      privilegeType: "ketua_umum",
-      assignedBy: session.user.id,
+    await prisma.mahasiswaPrivilege.create({
+      data: {
+        enrollmentId: enrollment.id,
+        classId,
+        privilegeType: "KETUA_UMUM",
+        assignedBy: session.user.id,
+      },
     });
 
     revalidatePath("/admin/privileges");
@@ -196,53 +206,71 @@ export async function assignKetuaUmum(
 export async function getKetuaUmum(classId: string) {
   await requireRole(["admin"]);
 
-  const [ketuaUmum] = await db
-    .select({
-      privilegeId: mahasiswaPrivileges.id,
-      enrollmentId: mahasiswaPrivileges.enrollmentId,
-      userId: classEnrollments.userId,
-      userName: users.name,
-      userEmail: users.email,
-    })
-    .from(mahasiswaPrivileges)
-    .innerJoin(
-      classEnrollments,
-      eq(mahasiswaPrivileges.enrollmentId, classEnrollments.id)
-    )
-    .innerJoin(users, eq(classEnrollments.userId, users.id))
-    .where(
-      and(
-        eq(mahasiswaPrivileges.classId, classId),
-        eq(mahasiswaPrivileges.privilegeType, "ketua_umum")
-      )
-    )
-    .limit(1);
+  const ketuaUmum = await prisma.mahasiswaPrivilege.findFirst({
+    where: {
+      classId,
+      privilegeType: "KETUA_UMUM",
+    },
+    include: {
+      enrollment: {
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+        },
+      },
+    },
+  });
 
-  return ketuaUmum || null;
+  if (!ketuaUmum) return null;
+
+  return {
+    privilegeId: ketuaUmum.id,
+    enrollmentId: ketuaUmum.enrollmentId,
+    userId: ketuaUmum.enrollment.user.id,
+    userName: ketuaUmum.enrollment.user.name,
+    userEmail: ketuaUmum.enrollment.user.email,
+  };
 }
 
 // Get all classes with their ketua umum
 export async function getClassesWithKetuaUmum() {
   await requireRole(["admin"]);
 
-  const classList = await db.select().from(classes).where(eq(classes.isActive, true));
+  const classList = await prisma.class.findMany({
+    where: { isActive: true },
+  });
 
-  const ketuaUmumList = await db
-    .select({
-      classId: mahasiswaPrivileges.classId,
-      userId: classEnrollments.userId,
-      userName: users.name,
-    })
-    .from(mahasiswaPrivileges)
-    .innerJoin(
-      classEnrollments,
-      eq(mahasiswaPrivileges.enrollmentId, classEnrollments.id)
-    )
-    .innerJoin(users, eq(classEnrollments.userId, users.id))
-    .where(eq(mahasiswaPrivileges.privilegeType, "ketua_umum"));
+  const ketuaUmumList = await prisma.mahasiswaPrivilege.findMany({
+    where: {
+      privilegeType: "KETUA_UMUM",
+    },
+    include: {
+      enrollment: {
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+        },
+      },
+    },
+  });
 
-  return classList.map((cls) => ({
+  return classList.map((cls: typeof classList[number]) => ({
     ...cls,
-    ketuaUmum: ketuaUmumList.find((ku) => ku.classId === cls.id) || null,
+    ketuaUmum: ketuaUmumList.find((ku: typeof ketuaUmumList[number]) => ku.classId === cls.id)
+      ? {
+          classId: cls.id,
+          userId: ketuaUmumList.find((ku: typeof ketuaUmumList[number]) => ku.classId === cls.id)!.enrollment.user.id,
+          userName: ketuaUmumList.find((ku: typeof ketuaUmumList[number]) => ku.classId === cls.id)!.enrollment.user.name,
+        }
+      : null,
   }));
 }

@@ -1,14 +1,6 @@
 import { redirect } from "next/navigation";
 import { requireRole } from "@/lib/auth/session";
-import { db } from "@/lib/db";
-import {
-  dosenPrivileges,
-  classes,
-  classEnrollments,
-  hafalanRecords,
-  attendanceRecords,
-} from "@/lib/db/schema";
-import { eq, count, and, sql } from "drizzle-orm";
+import prisma from "@/lib/prisma";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -21,25 +13,27 @@ import {
 import Link from "next/link";
 
 const privilegeLabels: Record<string, string> = {
-  dosen_pendamping: "Dosen Pendamping",
-  wali_kelas: "Wali Kelas",
-  pengurus_hafalan: "Pengurus Hafalan",
-  pengurus_capaian_materi: "Pengurus Capaian Materi",
-  pengurus_kelas: "Pengurus Kelas",
+  DOSEN_PENDAMPING: "Dosen Pendamping",
+  WALI_KELAS: "Wali Kelas",
+  PENGURUS_HAFALAN: "Pengurus Hafalan",
+  PENGURUS_CAPAIAN_MATERI: "Pengurus Capaian Materi",
+  PENGURUS_KELAS: "Pengurus Kelas",
 };
 
 async function getDosenData(userId: string) {
   // Get classes where dosen has privileges
-  const privileges = await db
-    .select({
-      classId: dosenPrivileges.classId,
-      className: classes.name,
-      classCode: classes.code,
-      privilegeType: dosenPrivileges.privilegeType,
-    })
-    .from(dosenPrivileges)
-    .innerJoin(classes, eq(dosenPrivileges.classId, classes.id))
-    .where(eq(dosenPrivileges.userId, userId));
+  const privileges = await prisma.dosenPrivilege.findMany({
+    where: { userId },
+    include: {
+      class: {
+        select: {
+          id: true,
+          name: true,
+          code: true,
+        },
+      },
+    },
+  });
 
   // Group by class
   const classMap = new Map<
@@ -53,8 +47,8 @@ async function getDosenData(userId: string) {
     } else {
       classMap.set(p.classId, {
         id: p.classId,
-        name: p.className,
-        code: p.classCode,
+        name: p.class.name,
+        code: p.class.code,
         privileges: [p.privilegeType],
       });
     }
@@ -71,32 +65,22 @@ async function getDosenData(userId: string) {
 
   if (classIds.length > 0) {
     // Total students
-    const [studentCount] = await db
-      .select({ count: count() })
-      .from(classEnrollments)
-      .where(
-        and(
-          sql`${classEnrollments.classId} IN (${sql.join(classIds.map(id => sql`${id}`), sql`, `)})`,
-          eq(classEnrollments.status, "active")
-        )
-      );
-    totalStudents = studentCount?.count || 0;
+    totalStudents = await prisma.classEnrollment.count({
+      where: {
+        classId: { in: classIds },
+        status: "ACTIVE",
+      },
+    });
 
     // Total hafalan (pending)
-    const [hafalanCount] = await db
-      .select({ count: count() })
-      .from(hafalanRecords)
-      .innerJoin(
-        classEnrollments,
-        eq(hafalanRecords.enrollmentId, classEnrollments.id)
-      )
-      .where(
-        and(
-          sql`${classEnrollments.classId} IN (${sql.join(classIds.map(id => sql`${id}`), sql`, `)})`,
-          eq(hafalanRecords.status, "pending")
-        )
-      );
-    totalHafalan = hafalanCount?.count || 0;
+    totalHafalan = await prisma.hafalanRecord.count({
+      where: {
+        enrollment: {
+          classId: { in: classIds },
+        },
+        status: "PENDING",
+      },
+    });
   }
 
   return {

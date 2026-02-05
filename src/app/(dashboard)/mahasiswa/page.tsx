@@ -1,16 +1,6 @@
 import { redirect } from "next/navigation";
 import { requireRole } from "@/lib/auth/session";
-import { db } from "@/lib/db";
-import {
-  classEnrollments,
-  classes,
-  mahasiswaPrivileges,
-  hafalanRecords,
-  materialAchievements,
-  attendanceRecords,
-  announcements,
-} from "@/lib/db/schema";
-import { eq, and, count, desc } from "drizzle-orm";
+import prisma from "@/lib/prisma";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -23,32 +13,31 @@ import {
 import Link from "next/link";
 
 const privilegeLabels: Record<string, string> = {
-  ketua_umum: "Ketua Umum",
-  ketua_kelompok: "Ketua Kelompok",
-  kamtib: "Kamtib",
-  ketua_fan_ilmu: "Ketua Fan Ilmu",
-  sekretaris: "Sekretaris",
-  bendahara: "Bendahara",
+  KETUA_UMUM: "Ketua Umum",
+  KETUA_KELOMPOK: "Ketua Kelompok",
+  KAMTIB: "Kamtib",
+  KETUA_FAN_ILMU: "Ketua Fan Ilmu",
+  SEKRETARIS: "Sekretaris",
+  BENDAHARA: "Bendahara",
 };
 
 async function getMahasiswaData(userId: string) {
   // Get active enrollment
-  const [enrollment] = await db
-    .select({
-      id: classEnrollments.id,
-      classId: classEnrollments.classId,
-      className: classes.name,
-      classCode: classes.code,
-    })
-    .from(classEnrollments)
-    .innerJoin(classes, eq(classEnrollments.classId, classes.id))
-    .where(
-      and(
-        eq(classEnrollments.userId, userId),
-        eq(classEnrollments.status, "active")
-      )
-    )
-    .limit(1);
+  const enrollment = await prisma.classEnrollment.findFirst({
+    where: {
+      userId,
+      status: "ACTIVE",
+    },
+    include: {
+      class: {
+        select: {
+          id: true,
+          name: true,
+          code: true,
+        },
+      },
+    },
+  });
 
   if (!enrollment) {
     return {
@@ -62,71 +51,71 @@ async function getMahasiswaData(userId: string) {
   }
 
   // Get privileges
-  const privileges = await db
-    .select({ privilegeType: mahasiswaPrivileges.privilegeType })
-    .from(mahasiswaPrivileges)
-    .where(eq(mahasiswaPrivileges.enrollmentId, enrollment.id));
+  const privileges = await prisma.mahasiswaPrivilege.findMany({
+    where: { enrollmentId: enrollment.id },
+    select: { privilegeType: true },
+  });
 
   // Get hafalan stats
-  const hafalanStats = await db
-    .select({
-      status: hafalanRecords.status,
-      count: count(),
-    })
-    .from(hafalanRecords)
-    .where(eq(hafalanRecords.enrollmentId, enrollment.id))
-    .groupBy(hafalanRecords.status);
+  const hafalanStats = await prisma.hafalanRecord.groupBy({
+    by: ["status"],
+    where: { enrollmentId: enrollment.id },
+    _count: { id: true },
+  });
 
+  type HafalanStat = { status: string; _count: { id: number } };
   const completedHafalan =
-    hafalanStats.find((h) => h.status === "completed")?.count || 0;
+    hafalanStats.find((h: HafalanStat) => h.status === "COMPLETED")?._count.id || 0;
   const pendingHafalan =
-    hafalanStats.find((h) => h.status === "pending")?.count || 0;
+    hafalanStats.find((h: HafalanStat) => h.status === "PENDING")?._count.id || 0;
 
   // Get achievement stats
-  const achievementStats = await db
-    .select({
-      status: materialAchievements.status,
-      count: count(),
-    })
-    .from(materialAchievements)
-    .where(eq(materialAchievements.enrollmentId, enrollment.id))
-    .groupBy(materialAchievements.status);
+  const achievementStats = await prisma.materialAchievement.groupBy({
+    by: ["status"],
+    where: { enrollmentId: enrollment.id },
+    _count: { id: true },
+  });
 
+  type AchievementStat = { status: string; _count: { id: number } };
   const completedAchievements =
-    achievementStats.find((a) => a.status === "completed")?.count || 0;
+    achievementStats.find((a: AchievementStat) => a.status === "COMPLETED")?._count.id || 0;
   const totalAchievements = achievementStats.reduce(
-    (sum, a) => sum + (a.count || 0),
+    (sum: number, a: AchievementStat) => sum + (a._count.id || 0),
     0
   );
 
   // Get attendance stats
-  const attendanceStats = await db
-    .select({
-      status: attendanceRecords.status,
-      count: count(),
-    })
-    .from(attendanceRecords)
-    .where(eq(attendanceRecords.enrollmentId, enrollment.id))
-    .groupBy(attendanceRecords.status);
+  const attendanceStats = await prisma.attendanceRecord.groupBy({
+    by: ["status"],
+    where: { enrollmentId: enrollment.id },
+    _count: { id: true },
+  });
 
+  type AttendanceStat = { status: string; _count: { id: number } };
   const presentAttendance =
-    attendanceStats.find((a) => a.status === "present")?.count || 0;
+    attendanceStats.find((a: AttendanceStat) => a.status === "PRESENT")?._count.id || 0;
   const totalAttendance = attendanceStats.reduce(
-    (sum, a) => sum + (a.count || 0),
+    (sum: number, a: AttendanceStat) => sum + (a._count.id || 0),
     0
   );
 
   // Get recent announcements
-  const recentAnnouncements = await db
-    .select()
-    .from(announcements)
-    .where(eq(announcements.classId, enrollment.classId))
-    .orderBy(desc(announcements.createdAt))
-    .limit(3);
+  const recentAnnouncements = await prisma.announcement.findMany({
+    where: { classId: enrollment.classId },
+    orderBy: { createdAt: "desc" },
+    take: 3,
+  });
+
+  type PrivilegeItem = { privilegeType: string };
 
   return {
-    enrollment,
-    privileges: privileges.map((p) => p.privilegeType),
+    enrollment: {
+      id: enrollment.id,
+      classId: enrollment.classId,
+      className: enrollment.class.name,
+      classCode: enrollment.class.code,
+    },
+    privileges: privileges.map((p: PrivilegeItem) => p.privilegeType),
     hafalanStats: { completed: completedHafalan, pending: pendingHafalan },
     achievementStats: { completed: completedAchievements, total: totalAchievements },
     attendanceStats: { present: presentAttendance, total: totalAttendance },
@@ -178,7 +167,7 @@ export default async function MahasiswaDashboardPage() {
               </div>
               {data.privileges.length > 0 && (
                 <div className="flex flex-wrap gap-1">
-                  {data.privileges.map((p) => (
+                  {data.privileges.map((p: string) => (
                     <Badge key={p} variant="default">
                       {privilegeLabels[p] || p}
                     </Badge>
@@ -296,7 +285,7 @@ export default async function MahasiswaDashboardPage() {
                   <p className="text-muted-foreground">Belum ada pengumuman.</p>
                 ) : (
                   <div className="space-y-3">
-                    {data.recentAnnouncements.map((announcement) => (
+                    {data.recentAnnouncements.map((announcement: { id: string; title: string; content: string; createdAt: Date }) => (
                       <div
                         key={announcement.id}
                         className="rounded-lg border p-3"

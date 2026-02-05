@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { User } from "@/lib/db/schema";
+import { User } from "@/actions/admin/users";
 import {
   Table,
   TableBody,

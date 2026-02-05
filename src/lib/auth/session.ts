@@ -1,22 +1,44 @@
 import { cookies } from "next/headers";
 import jwt from "jsonwebtoken";
-import { db } from "@/lib/db";
-import { users } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import prisma from "@/lib/prisma";
 
 const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
 const COOKIE_NAME = "mamal_session";
+
+// User type enum values from Prisma
+type PrismaUserType = "ADMIN" | "DOSEN" | "MAHASISWA";
+type SessionUserType = "admin" | "dosen" | "mahasiswa";
 
 export interface SessionUser {
   id: string;
   email: string;
   name: string;
-  userType: "admin" | "dosen" | "mahasiswa";
+  userType: SessionUserType;
   photoUrl: string | null;
 }
 
 export interface Session {
   user: SessionUser;
+}
+
+// Helper to convert Prisma UserType enum to lowercase string
+function userTypeToString(userType: PrismaUserType): SessionUserType {
+  const mapping: Record<PrismaUserType, SessionUserType> = {
+    ADMIN: "admin",
+    DOSEN: "dosen",
+    MAHASISWA: "mahasiswa",
+  };
+  return mapping[userType];
+}
+
+// Helper to convert lowercase string to Prisma UserType enum
+export function stringToUserType(str: string): PrismaUserType {
+  const mapping: Record<string, PrismaUserType> = {
+    admin: "ADMIN",
+    dosen: "DOSEN",
+    mahasiswa: "MAHASISWA",
+  };
+  return mapping[str.toLowerCase()] || "MAHASISWA";
 }
 
 export async function createSession(user: SessionUser): Promise<string> {
@@ -56,11 +78,9 @@ export async function getSession(): Promise<Session | null> {
     const decoded = jwt.verify(token, JWT_SECRET) as SessionUser;
 
     // Verify user still exists and is active
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, decoded.id))
-      .limit(1);
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.id },
+    });
 
     if (!user || !user.isActive) {
       return null;
@@ -71,7 +91,7 @@ export async function getSession(): Promise<Session | null> {
         id: user.id,
         email: user.email,
         name: user.name,
-        userType: user.userType,
+        userType: userTypeToString(user.userType as PrismaUserType),
         photoUrl: user.photoUrl,
       },
     };
@@ -94,7 +114,7 @@ export async function requireAuth(): Promise<Session> {
 }
 
 export async function requireRole(
-  allowedRoles: ("admin" | "dosen" | "mahasiswa")[]
+  allowedRoles: SessionUserType[]
 ): Promise<Session> {
   const session = await requireAuth();
   if (!allowedRoles.includes(session.user.userType)) {

@@ -1,17 +1,21 @@
 "use server";
 
-import { db } from "@/lib/db";
-import {
-  hafalanRecords,
-  classEnrollments,
-  users,
-  fanIlmu,
-} from "@/lib/db/schema";
-import { eq, and, desc } from "drizzle-orm";
+import prisma from "@/lib/prisma";
 import { getSession } from "@/lib/auth/session";
 import { hasDosenPrivilege } from "@/lib/auth/permissions";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+
+// Type helpers
+type PrismaHafalanStatus = "PENDING" | "IN_PROGRESS" | "COMPLETED" | "NEED_REVISION";
+
+function toHafalanPrismaEnum(status: string): PrismaHafalanStatus {
+  return status.toUpperCase().replace("-", "_") as PrismaHafalanStatus;
+}
+
+function fromHafalanPrismaEnum(status: PrismaHafalanStatus): string {
+  return status.toLowerCase().replace("_", "-");
+}
 
 export type HafalanFormState = {
   errors?: Record<string, string[]>;
@@ -62,63 +66,88 @@ export async function getClassHafalanRecords(classId: string) {
     throw new Error("Unauthorized");
   }
 
-  const records = await db
-    .select({
-      id: hafalanRecords.id,
-      surahOrContent: hafalanRecords.surahOrContent,
-      ayatStart: hafalanRecords.ayatStart,
-      ayatEnd: hafalanRecords.ayatEnd,
-      status: hafalanRecords.status,
-      score: hafalanRecords.score,
-      notes: hafalanRecords.notes,
-      createdAt: hafalanRecords.createdAt,
-      evaluatedAt: hafalanRecords.evaluatedAt,
-      studentName: users.name,
-      studentEmail: users.email,
-      fanIlmuName: fanIlmu.name,
-      enrollmentId: classEnrollments.id,
-    })
-    .from(hafalanRecords)
-    .innerJoin(
-      classEnrollments,
-      eq(hafalanRecords.enrollmentId, classEnrollments.id)
-    )
-    .innerJoin(users, eq(classEnrollments.userId, users.id))
-    .leftJoin(fanIlmu, eq(hafalanRecords.fanIlmuId, fanIlmu.id))
-    .where(eq(classEnrollments.classId, classId))
-    .orderBy(desc(hafalanRecords.createdAt));
+  const records = await prisma.hafalanRecord.findMany({
+    where: {
+      enrollment: {
+        classId,
+      },
+    },
+    include: {
+      enrollment: {
+        include: {
+          user: {
+            select: {
+              name: true,
+              email: true,
+            },
+          },
+        },
+      },
+      fanIlmu: {
+        select: {
+          name: true,
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
 
-  return records;
+  return records.map((record: typeof records[number]) => ({
+    id: record.id,
+    surahOrContent: record.surahOrContent,
+    ayatStart: record.ayatStart,
+    ayatEnd: record.ayatEnd,
+    status: fromHafalanPrismaEnum(record.status as PrismaHafalanStatus),
+    score: record.score,
+    notes: record.notes,
+    createdAt: record.createdAt,
+    evaluatedAt: record.evaluatedAt,
+    studentName: record.enrollment.user.name,
+    studentEmail: record.enrollment.user.email,
+    fanIlmuName: record.fanIlmu?.name || null,
+    enrollmentId: record.enrollmentId,
+  }));
 }
 
 // Get pending hafalan for a class
 export async function getPendingHafalan(classId: string) {
   await verifyHafalanPrivilege(classId);
 
-  return db
-    .select({
-      id: hafalanRecords.id,
-      surahOrContent: hafalanRecords.surahOrContent,
-      ayatStart: hafalanRecords.ayatStart,
-      ayatEnd: hafalanRecords.ayatEnd,
-      createdAt: hafalanRecords.createdAt,
-      studentName: users.name,
-      fanIlmuName: fanIlmu.name,
-    })
-    .from(hafalanRecords)
-    .innerJoin(
-      classEnrollments,
-      eq(hafalanRecords.enrollmentId, classEnrollments.id)
-    )
-    .innerJoin(users, eq(classEnrollments.userId, users.id))
-    .leftJoin(fanIlmu, eq(hafalanRecords.fanIlmuId, fanIlmu.id))
-    .where(
-      and(
-        eq(classEnrollments.classId, classId),
-        eq(hafalanRecords.status, "pending")
-      )
-    )
-    .orderBy(hafalanRecords.createdAt);
+  const records = await prisma.hafalanRecord.findMany({
+    where: {
+      enrollment: {
+        classId,
+      },
+      status: "PENDING",
+    },
+    include: {
+      enrollment: {
+        include: {
+          user: {
+            select: {
+              name: true,
+            },
+          },
+        },
+      },
+      fanIlmu: {
+        select: {
+          name: true,
+        },
+      },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  return records.map((record: typeof records[number]) => ({
+    id: record.id,
+    surahOrContent: record.surahOrContent,
+    ayatStart: record.ayatStart,
+    ayatEnd: record.ayatEnd,
+    createdAt: record.createdAt,
+    studentName: record.enrollment.user.name,
+    fanIlmuName: record.fanIlmu?.name || null,
+  }));
 }
 
 // Create hafalan record
@@ -126,9 +155,8 @@ export async function createHafalanRecord(
   classId: string,
   data: z.infer<typeof createHafalanSchema>
 ): Promise<HafalanFormState> {
-  let session;
   try {
-    session = await verifyHafalanPrivilege(classId);
+    await verifyHafalanPrivilege(classId);
   } catch (error) {
     return { errors: { general: [(error as Error).message] } };
   }
@@ -139,13 +167,15 @@ export async function createHafalanRecord(
   }
 
   try {
-    await db.insert(hafalanRecords).values({
-      enrollmentId: validatedFields.data.enrollmentId,
-      fanIlmuId: validatedFields.data.fanIlmuId,
-      surahOrContent: validatedFields.data.surahOrContent,
-      ayatStart: validatedFields.data.ayatStart,
-      ayatEnd: validatedFields.data.ayatEnd,
-      status: "pending",
+    await prisma.hafalanRecord.create({
+      data: {
+        enrollmentId: validatedFields.data.enrollmentId,
+        fanIlmuId: validatedFields.data.fanIlmuId,
+        surahOrContent: validatedFields.data.surahOrContent,
+        ayatStart: validatedFields.data.ayatStart,
+        ayatEnd: validatedFields.data.ayatEnd,
+        status: "PENDING",
+      },
     });
 
     revalidatePath(`/dosen/classes/${classId}/hafalan`);
@@ -174,16 +204,16 @@ export async function evaluateHafalan(
   }
 
   try {
-    await db
-      .update(hafalanRecords)
-      .set({
-        status: validatedFields.data.status,
-        score: validatedFields.data.score.toString(),
+    await prisma.hafalanRecord.update({
+      where: { id: validatedFields.data.hafalanId },
+      data: {
+        status: toHafalanPrismaEnum(validatedFields.data.status),
+        score: validatedFields.data.score,
         notes: validatedFields.data.notes,
         evaluatedBy: session.user.id,
         evaluatedAt: new Date(),
-      })
-      .where(eq(hafalanRecords.id, validatedFields.data.hafalanId));
+      },
+    });
 
     revalidatePath(`/dosen/classes/${classId}/hafalan`);
     return { success: true, message: "Hafalan berhasil dievaluasi" };
@@ -200,26 +230,85 @@ export async function getStudentHafalanHistory(enrollmentId: string) {
     throw new Error("Unauthorized");
   }
 
-  return db
-    .select({
-      id: hafalanRecords.id,
-      surahOrContent: hafalanRecords.surahOrContent,
-      ayatStart: hafalanRecords.ayatStart,
-      ayatEnd: hafalanRecords.ayatEnd,
-      status: hafalanRecords.status,
-      score: hafalanRecords.score,
-      notes: hafalanRecords.notes,
-      createdAt: hafalanRecords.createdAt,
-      evaluatedAt: hafalanRecords.evaluatedAt,
-      fanIlmuName: fanIlmu.name,
-    })
-    .from(hafalanRecords)
-    .leftJoin(fanIlmu, eq(hafalanRecords.fanIlmuId, fanIlmu.id))
-    .where(eq(hafalanRecords.enrollmentId, enrollmentId))
-    .orderBy(desc(hafalanRecords.createdAt));
+  const records = await prisma.hafalanRecord.findMany({
+    where: { enrollmentId },
+    include: {
+      fanIlmu: {
+        select: {
+          name: true,
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  return records.map((record: typeof records[number]) => ({
+    id: record.id,
+    surahOrContent: record.surahOrContent,
+    ayatStart: record.ayatStart,
+    ayatEnd: record.ayatEnd,
+    status: fromHafalanPrismaEnum(record.status as PrismaHafalanStatus),
+    score: record.score,
+    notes: record.notes,
+    createdAt: record.createdAt,
+    evaluatedAt: record.evaluatedAt,
+    fanIlmuName: record.fanIlmu?.name || null,
+  }));
 }
 
 // Get fan ilmu options for a class
 export async function getClassFanIlmu(classId: string) {
-  return db.select().from(fanIlmu).where(eq(fanIlmu.classId, classId));
+  return prisma.fanIlmu.findMany({
+    where: { classId },
+  });
+}
+
+// Get hafalan progress for a student
+export async function getHafalanProgress(enrollmentId: string) {
+  const records = await prisma.hafalanRecord.findMany({
+    where: { enrollmentId },
+    include: {
+      fanIlmu: true,
+    },
+  });
+
+  const progressByFanIlmu: Record<string, {
+    name: string;
+    total: number;
+    completed: number;
+    totalScore: number;
+    averageScore: number;
+  }> = {};
+
+  records.forEach((record: typeof records[number]) => {
+    const fanIlmuId = record.fanIlmuId || "general";
+    
+    if (!progressByFanIlmu[fanIlmuId]) {
+      progressByFanIlmu[fanIlmuId] = {
+        name: record.fanIlmu?.name || "Umum",
+        total: 0,
+        completed: 0,
+        totalScore: 0,
+        averageScore: 0,
+      };
+    }
+    
+    const progress = progressByFanIlmu[fanIlmuId];
+    progress.total++;
+    
+    if (record.status === "COMPLETED") {
+      progress.completed++;
+      progress.totalScore += Number(record.score) || 0;
+    }
+  });
+
+  // Calculate average scores
+  Object.keys(progressByFanIlmu).forEach((fanId) => {
+    const progress = progressByFanIlmu[fanId];
+    progress.averageScore = progress.completed > 0 
+      ? progress.totalScore / progress.completed 
+      : 0;
+  });
+
+  return progressByFanIlmu;
 }
